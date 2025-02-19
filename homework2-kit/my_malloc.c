@@ -1,6 +1,5 @@
 #include "my_malloc.h"
 #include "assert.h"
-#include <pthread.h>
 #include <stdbool.h>
 
 // #pragma clang diagnostic push
@@ -10,82 +9,28 @@ __thread mem *thread_freeStart = NULL;//每个线程都有自己的空闲链表
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER; // 定义一个锁
 void *ts_malloc_lock(size_t size) {
     pthread_mutex_lock(&mutex);
-    mem *free_list = freeStart;
-    while (free_list) {
-        free_list->global_next = free_list->free_mem_next;
-        free_list->global_prev = free_list->free_mem_prev;
-        free_list = free_list->free_mem_next;
-    }
     void *p = bf_malloc(size, false);
-    free_list = freeStart;
-    while(free_list){
-        freeStart->free_mem_next = freeStart->global_next;
-        freeStart->free_mem_prev = freeStart->global_prev;
-        free_list = free_list->global_next;
-    }
     pthread_mutex_unlock(&mutex);
     return p;
 }
 void ts_free_lock(void *p) {
     pthread_mutex_lock(&mutex);
-    mem *free_list = freeStart;
-    while (free_list) {
-        free_list->global_next = free_list->free_mem_next;
-        free_list->global_prev = free_list->free_mem_prev;
-        free_list = free_list->free_mem_next;
-    }
     bf_free(p, false);
-    free_list = freeStart;
-    while(free_list){
-        freeStart->free_mem_next = freeStart->global_next;
-        freeStart->free_mem_prev = freeStart->global_prev;
-        free_list = free_list->global_next;
-    }
     pthread_mutex_unlock(&mutex);
 }
 
 void *ts_malloc_nolock(size_t size) {
-    mem *free_list = thread_freeStart;
-    while (free_list) {
-        free_list->global_next = free_list->thread_next;
-        free_list->global_prev = free_list->thread_prev;
-        free_list = free_list->thread_next;
-    }
     void *p = bf_malloc(size, true);
-    if (p == NULL) {
-        pthread_mutex_lock(&mutex);
-        p = sbrk(size);
-        pthread_mutex_unlock(&mutex);
-    }
     return p;
-    free_list = thread_freeStart;
-    while(free_list){
-        freeStart->thread_next = freeStart->global_next;
-        freeStart->thread_prev = freeStart->global_prev;
-        free_list = free_list->global_next;
-    }
 }
 
 void ts_free_nolock(void *p) {
-    mem *free_list = thread_freeStart;
-    while (free_list) {
-        free_list->global_next = free_list->thread_next;
-        free_list->global_prev = free_list->thread_prev;
-        free_list = free_list->thread_next;
-    }
     bf_free(p, true);
-    free_list = thread_freeStart;
-    while(free_list){
-        freeStart->thread_next = freeStart->global_next;
-        freeStart->thread_prev = freeStart->global_prev;
-        free_list = free_list->global_next;
-    }
 }
 void * bf_malloc(size_t size, bool use_unlock){
     if (size == 0) {
         return NULL; 
     }
-    pthread_mutex_lock(&mutex); //lock 1
     mem* free_p = freeStart;
     mem* best = NULL;
     while (free_p != NULL) {
@@ -101,17 +46,17 @@ void * bf_malloc(size_t size, bool use_unlock){
     }
     if(best){
         if(best->size >= size){
-            pthread_mutex_unlock(&mutex); 
             return this_malloc(size, best, use_unlock);}
     }
     if(use_unlock){
-        pthread_mutex_unlock(&mutex); 
-        return NULL;
+        pthread_mutex_lock(&mutex);
+        mem *new = sbrk(size + sizeof(mem));
+        pthread_mutex_unlock(&mutex);
+        return (char *)new + sizeof(mem);
     }
-    pthread_mutex_unlock(&mutex); 
-    return this_allocate(size, use_unlock);
+    return this_allocate(size);
 }
-void * this_allocate(size_t size, bool use_unlock){
+void * this_allocate(size_t size){
     size_t mem_size = size + sizeof(mem);
     mem *new = sbrk(mem_size);
     if (new == (void *)-1) {
@@ -126,6 +71,9 @@ void * this_allocate(size_t size, bool use_unlock){
 void * this_malloc(size_t size, mem* ptr, bool use_unlock){
     this_remove(ptr, use_unlock);
     if(ptr->size <= size + sizeof(mem)){
+        this_remove(ptr, use_unlock);
+        ptr->global_next = NULL;
+        ptr->global_prev = NULL; 
         return ((char*)ptr+sizeof(mem));//返回新mem被使用的地址
     }
     mem* new = split(size, ptr);
